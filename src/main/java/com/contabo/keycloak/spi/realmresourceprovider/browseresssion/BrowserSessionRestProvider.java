@@ -9,6 +9,7 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
+import org.keycloak.protocol.oidc.utils.RedirectUtils;
 import org.keycloak.representations.AccessToken;
 import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.managers.AuthenticationManager;
@@ -16,7 +17,9 @@ import org.keycloak.services.resource.RealmResourceProvider;
 import org.keycloak.utils.MediaType;
 
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
+import java.net.URLDecoder;
 
 import javax.ws.rs.Encoded;
 import javax.ws.rs.GET;
@@ -70,16 +73,17 @@ public class BrowserSessionRestProvider implements RealmResourceProvider {
   @GET
   @Path("init")
   @NoCache
-  @Produces({ MediaType.APPLICATION_JSON })
+  @Produces({ MediaType.TEXT_HTML_UTF_8 })
   @Encoded
-  public Response setSessionCookies(@QueryParam("publicClient") String targetClient) {
+  public Response setSessionCookies(@QueryParam("clientId") String targetClient,
+      @QueryParam("redirect_uri") String redirectUri) {
     AccessToken validToken = this.validateAccessToken();
 
     ClientModel newClient = this.getValidatedTargetClient(targetClient);
     final RealmModel realm = this.keycloakSession.getContext().getRealm();
 
     // create new user session and bind it to the target client Id
-    final UserModel user = this.keycloakSession.users().getUserById(validToken.getSubject(), realm);
+    final UserModel user = this.keycloakSession.users().getUserById(realm, validToken.getSubject());
     final ClientConnection clientConnection = this.keycloakSession.getContext().getConnection();
     UserSessionModel newUserSession = this.keycloakSession.sessions().createUserSession(realm, user, user.getUsername(),
         clientConnection.getRemoteAddr(), "KEYCLOAK", false, null, null);
@@ -93,6 +97,25 @@ public class BrowserSessionRestProvider implements RealmResourceProvider {
         uriInfo, clientConnection);
 
     String accessControlAllowOrigin = this.getAccessControlAllowOrigin(targetClient);
+
+    String decodedRedirectUri;
+    try {
+      decodedRedirectUri = URLDecoder.decode(
+          redirectUri, "UTF-8");
+    } catch (Exception e) {
+      throw new ErrorResponseException(Errors.INVALID_REQUEST, "Malformed request, invalid redirect uri",
+          Response.Status.UNAUTHORIZED);
+    }
+
+    String validRedirectUri = RedirectUtils.verifyRedirectUri(
+        this.keycloakSession,
+        decodedRedirectUri,
+        newClient);
+
+    if (validRedirectUri != null) {
+      return Response.temporaryRedirect(URI.create(validRedirectUri)).build();
+    }
+
     return Response
         .noContent()
         .header("Access-Control-Allow-Origin", accessControlAllowOrigin)
@@ -114,7 +137,7 @@ public class BrowserSessionRestProvider implements RealmResourceProvider {
     } catch (MalformedURLException e) {
       referer = "";
     }
-
+    newClient.getRedirectUris();
     // search for matching web origin
     for (String currentWebOrigin : newClient.getWebOrigins()) {
       if (currentWebOrigin.equals("*")) {
